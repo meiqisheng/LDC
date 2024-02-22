@@ -1,0 +1,95 @@
+import argparse
+import cv2
+import numpy as np
+import onnxruntime
+
+
+class LDC():
+    def __init__(self, modelpath):
+        so = onnxruntime.SessionOptions()
+        so.log_severity_level = 3
+        self.net = onnxruntime.InferenceSession(modelpath, so)
+        self.input_height = self.net.get_inputs()[0].shape[2]
+        self.input_width = self.net.get_inputs()[0].shape[3]
+        self.input_name = self.net.get_inputs()[0].name
+        output_names = [x.name for x in self.net.get_outputs()]
+
+    def detect(self, srcimg):
+        img = cv2.resize(srcimg, dsize=(self.input_width, self.input_height))
+        img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
+        blob = np.expand_dims(np.transpose(img, (2, 0, 1)), axis=0).astype(np.float32)
+        outs = self.net.run(None, {self.input_name: blob})
+
+        image_width, image_height = srcimg.shape[1], srcimg.shape[0]
+        for index, result in enumerate(outs):
+            mask = np.squeeze(result)
+            mask = 1 / (1 + np.exp(-mask))  ### sigmoid
+            min_value = np.min(mask)
+            max_value = np.max(mask)
+            mask = (mask - min_value) * 255 / (max_value - min_value + 1e-12)
+            mask = mask.astype('uint8')
+            mask = cv2.bitwise_not(src=mask)
+            mask = cv2.resize(mask, (image_width, image_height))
+
+            outs[index] = mask
+
+        average_image = np.uint8(np.mean(outs, axis=0))
+        fuse_image = outs[index]
+        return average_image, fuse_image
+
+
+if __name__ == '__main__':
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--imgpath", type=str, default='images/IMG_2567.jpg')
+    parser.add_argument("--modelpath", type=str, default='weights/LDC_640x360.onnx')
+    args = parser.parse_args()
+
+    mynet = LDC(args.modelpath)
+
+    cap = cv2.VideoCapture(0)
+
+    while True:  
+        # 从摄像头读取一帧图像  
+        ret, frame = cap.read() 
+
+        average_image, fuse_image = mynet.detect(frame)
+
+        _, threshold_image = cv2.threshold(average_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+        
+        skeletonize_image_zhangsuen = cv2.ximgproc.thinning(threshold_image, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
+        skeletonize_image_zhangsuen = cv2.bitwise_not(skeletonize_image_zhangsuen)
+
+        skeletonize_image_guohall = cv2.ximgproc.thinning(threshold_image, thinningType=cv2.ximgproc.THINNING_GUOHALL)
+        skeletonize_image_guohall = cv2.bitwise_not(skeletonize_image_guohall)
+
+        dstimg = np.hstack((average_image, fuse_image, threshold_image, skeletonize_image_zhangsuen, skeletonize_image_guohall))
+        
+        cv2.namedWindow('dstimg', cv2.WINDOW_FREERATIO)
+        cv2.imshow('dstimg', dstimg)
+            
+        # 按下q键退出循环  
+        if cv2.waitKey(1) & 0xFF == ord('q'):  
+            break  
+
+    # srcimg = cv2.imread(args.imgpath)
+    # average_image, fuse_image = mynet.detect(srcimg)
+
+    # _, threshold_image = cv2.threshold(average_image, 0, 255, cv2.THRESH_BINARY_INV + cv2.THRESH_OTSU)
+    
+    # skeletonize_image_zhangsuen = cv2.ximgproc.thinning(threshold_image, thinningType=cv2.ximgproc.THINNING_ZHANGSUEN)
+    # skeletonize_image_zhangsuen = cv2.bitwise_not(skeletonize_image_zhangsuen)
+
+    # skeletonize_image_guohall = cv2.ximgproc.thinning(threshold_image, thinningType=cv2.ximgproc.THINNING_GUOHALL)
+    # skeletonize_image_guohall = cv2.bitwise_not(skeletonize_image_guohall)
+
+    # dstimg = np.hstack((average_image, fuse_image, threshold_image, skeletonize_image_zhangsuen, skeletonize_image_guohall))
+    # cv2.imwrite('result.jpg', dstimg)
+    
+    # cv2.namedWindow('srcimg', cv2.WINDOW_NORMAL)
+    # cv2.imshow('srcimg', srcimg)
+    # cv2.namedWindow('LDC Output(Average)', cv2.WINDOW_NORMAL)
+    # cv2.imshow('LDC Output(Average)', average_image)
+    # cv2.namedWindow('LDC Output(Fuse)', cv2.WINDOW_NORMAL)
+    # cv2.imshow('LDC Output(Fuse)', fuse_image)
+    # cv2.waitKey(0)
+    # cv2.destroyAllWindows()
